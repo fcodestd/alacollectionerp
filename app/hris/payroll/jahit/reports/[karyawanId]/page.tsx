@@ -10,7 +10,7 @@ import {
   Printer,
   Receipt,
   Coffee,
-  Share2,
+  Send,
 } from "lucide-react";
 import { toast } from "sonner";
 import { useReactToPrint } from "react-to-print";
@@ -109,56 +109,45 @@ export default function DetailKinerjaPage({
     documentTitle: `Slip_Gaji_${karyawan?.nama}`,
   });
 
-  // FUNGSI BARU: Langsung Bagikan File via Share API Bawaan HP
-  const handleSharePDF = async () => {
-    const element = printRef.current;
-    if (!element) return;
+  const formatRupiah = (n: number) =>
+    new Intl.NumberFormat("id-ID", {
+      style: "currency",
+      currency: "IDR",
+      minimumFractionDigits: 0,
+    }).format(n);
 
-    try {
-      toast.info("Menyiapkan PDF untuk dibagikan...");
+  const renderTanggalCantik = (dateStr: string) => {
+    const d = new Date(`${dateStr}T00:00:00`);
+    return d.toLocaleDateString("id-ID", {
+      weekday: "long",
+      day: "2-digit",
+      month: "short",
+      year: "numeric",
+    });
+  };
 
-      const { toPng } = await import("html-to-image");
-      const { jsPDF } = await import("jspdf");
+  // FUNGSI BARU: Generate Text WA dan buka via Link wa.me
+  const handleShareWA = (data: any) => {
+    let msg = `*SLIP GAJI JAHIT - ALA COLLECTION*\n`;
+    msg += `----------------------------------\n`;
+    msg += `*Nama:* ${karyawan?.nama}\n`;
+    msg += `*Periode:* ${renderTanggalCantik(data.tanggalMulai.split("T")[0])} - ${renderTanggalCantik(data.tanggalAkhir.split("T")[0])}\n\n`;
 
-      const dataUrl = await toPng(element, {
-        quality: 1,
-        pixelRatio: 2,
-        backgroundColor: "#ffffff",
-      });
-      const pdf = new jsPDF({
-        orientation: "landscape",
-        unit: "mm",
-        format: "a4",
-      });
-
-      const pdfWidth = 297 - 20;
-      const imgProps = pdf.getImageProperties(dataUrl);
-      const pdfHeight = (imgProps.height * pdfWidth) / imgProps.width;
-
-      pdf.addImage(dataUrl, "PNG", 10, 10, pdfWidth, pdfHeight);
-
-      // Mengubah PDF menjadi tipe data Blob & File yang bisa dikirim
-      const pdfBlob = pdf.output("blob");
-      const fileName = `Slip_Gaji_${karyawan?.nama?.replace(/\s+/g, "_")}_Minggu_Ini.pdf`;
-      const file = new File([pdfBlob], fileName, { type: "application/pdf" });
-
-      // Cek apakah HP mendukung fitur share file dokumen
-      if (navigator.canShare && navigator.canShare({ files: [file] })) {
-        await navigator.share({
-          files: [file],
-          title: "Slip Gaji Ala Collection",
-          text: `Berikut adalah rincian slip gaji untuk ${karyawan?.nama} minggu ini.`,
-        });
-        toast.success("Berhasil membagikan PDF!");
+    msg += `*Rincian Harian:*\n`;
+    data.riwayatHarian.forEach((day: any) => {
+      if (day.items && day.items.length > 0) {
+        msg += `✅ ${renderTanggalCantik(day.tanggal)}: ${formatRupiah(day.subtotalHarian)}\n`;
       } else {
-        // Jika pakai PC atau browser jadul, fallback ke mode unduh
-        pdf.save(fileName);
-        toast.success("PDF diunduh (Browser tidak mendukung Share langsung).");
+        msg += `☕ ${renderTanggalCantik(day.tanggal)}: Libur\n`;
       }
-    } catch (error) {
-      toast.error("Terjadi kesalahan atau share dibatalkan.");
-      console.error(error);
-    }
+    });
+
+    msg += `----------------------------------\n`;
+    msg += `*TOTAL DITERIMA: ${formatRupiah(data.grandTotal)}*\n`;
+
+    // Encode text agar aman masuk ke URL
+    const encodedMsg = encodeURIComponent(msg);
+    window.open(`https://wa.me/?text=${encodedMsg}`, "_blank");
   };
 
   useEffect(() => {
@@ -190,38 +179,25 @@ export default function DetailKinerjaPage({
   const aksiCetakAtauBagikan = async () => {
     setIsPreparingSlip(true);
     const res = await getSlipGajiMingguIni(Number(karyawanId));
+
     if (res.success && res.data) {
       setDataSlip(res.data);
 
-      setTimeout(() => {
-        if (isMobile) {
-          handleSharePDF(); // Panggil fungsi Share yang baru
-        } else {
-          handlePrint(); // Panggil print biasa jika di PC
-        }
+      if (isMobile) {
+        // Jika di HP, langsung buat text WA dan buka link (tanpa nunggu render PDF DOM)
+        handleShareWA(res.data);
         setIsPreparingSlip(false);
-      }, 1000);
+      } else {
+        // Jika di PC, tunggu DOM ter-render untuk Print
+        setTimeout(() => {
+          handlePrint();
+          setIsPreparingSlip(false);
+        }, 500);
+      }
     } else {
       toast.error("Gagal menyiapkan data.");
       setIsPreparingSlip(false);
     }
-  };
-
-  const formatRupiah = (n: number) =>
-    new Intl.NumberFormat("id-ID", {
-      style: "currency",
-      currency: "IDR",
-      minimumFractionDigits: 0,
-    }).format(n);
-
-  const renderTanggalCantik = (dateStr: string) => {
-    const d = new Date(`${dateStr}T00:00:00`);
-    return d.toLocaleDateString("id-ID", {
-      weekday: "long",
-      day: "2-digit",
-      month: "long",
-      year: "numeric",
-    });
   };
 
   if (!karyawan) return null;
@@ -247,7 +223,6 @@ export default function DetailKinerjaPage({
           </div>
         </div>
 
-        {/* Tombol akan berubah Ikon dan Teks otomatis sesuai perangkat */}
         <Button
           onClick={aksiCetakAtauBagikan}
           disabled={isPreparingSlip}
@@ -256,11 +231,13 @@ export default function DetailKinerjaPage({
           {isPreparingSlip ? (
             <Loader2 className="animate-spin mr-2 h-4 w-4" />
           ) : isMobile ? (
-            <Share2 className="mr-2 h-4 w-4" />
+            <Send className="mr-2 h-4 w-4" />
           ) : (
             <Printer className="mr-2 h-4 w-4" />
           )}
-          {isMobile ? "Bagikan ke WhatsApp" : "Cetak Slip Gaji (Minggu Ini)"}
+          {isMobile
+            ? "Kirim Slip ke WA (Link)"
+            : "Cetak Slip Gaji (Minggu Ini)"}
         </Button>
       </div>
 
@@ -392,13 +369,13 @@ export default function DetailKinerjaPage({
         </DialogContent>
       </Dialog>
 
-      {/* RENDER OFF-SCREEN TERISOLASI UNTUK PDF */}
+      {/* RENDER OFF-SCREEN TERISOLASI UNTUK PDF (Khusus PC) */}
       <div style={{ position: "absolute", left: "-9999px", top: "-9999px" }}>
         <div
           ref={printRef}
           style={{ width: "1122px", backgroundColor: "#ffffff" }}
         >
-          {dataSlip && (
+          {dataSlip && !isMobile && (
             <SlipGaji karyawanNama={karyawan?.nama} dataSlip={dataSlip} />
           )}
         </div>
