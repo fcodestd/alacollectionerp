@@ -10,7 +10,9 @@ import {
   Printer,
   Receipt,
   Coffee,
-  Send,
+  Link as LinkIcon,
+  Check,
+  MessageCircle,
 } from "lucide-react";
 import { toast } from "sonner";
 import { useReactToPrint } from "react-to-print";
@@ -38,6 +40,7 @@ import {
   getKinerjaHarian,
   getDetailItemHarian,
   getSlipGajiMingguIni,
+  uploadSlipKeCloudinary,
 } from "./actions";
 
 export default function DetailKinerjaPage({
@@ -95,7 +98,13 @@ export default function DetailKinerjaPage({
 
   const printRef = useRef<HTMLDivElement>(null);
   const [dataSlip, setDataSlip] = useState<any>(null);
+
   const [isPreparingSlip, setIsPreparingSlip] = useState(false);
+  const [uploadStatus, setUploadStatus] = useState("");
+
+  // STATE BARU UNTUK MODAL LINK
+  const [generatedLink, setGeneratedLink] = useState("");
+  const [isLinkModalOpen, setIsLinkModalOpen] = useState(false);
 
   useEffect(() => {
     const checkMobile = () => setIsMobile(window.innerWidth < 768);
@@ -115,7 +124,6 @@ export default function DetailKinerjaPage({
       currency: "IDR",
       minimumFractionDigits: 0,
     }).format(n);
-
   const renderTanggalCantik = (dateStr: string) => {
     const d = new Date(`${dateStr}T00:00:00`);
     return d.toLocaleDateString("id-ID", {
@@ -126,28 +134,74 @@ export default function DetailKinerjaPage({
     });
   };
 
-  // FUNGSI BARU: Generate Text WA dan buka via Link wa.me
-  const handleShareWA = (data: any) => {
+  const handleGenerateAndCopyLink = async () => {
+    const element = printRef.current;
+    if (!element) return;
+
+    try {
+      setUploadStatus("Membuat dokumen...");
+      const { toJpeg } = await import("html-to-image");
+      const { jsPDF } = await import("jspdf");
+
+      const dataUrl = await toJpeg(element, {
+        quality: 0.8,
+        pixelRatio: 1.5,
+        backgroundColor: "#ffffff",
+        skipFonts: true,
+      });
+
+      const pdf = new jsPDF({
+        orientation: "landscape",
+        unit: "mm",
+        format: "a4",
+      });
+      const pdfWidth = 297 - 20;
+      const imgProps = pdf.getImageProperties(dataUrl);
+      const pdfHeight = (imgProps.height * pdfWidth) / imgProps.width;
+      pdf.addImage(dataUrl, "JPEG", 10, 10, pdfWidth, pdfHeight);
+
+      let pdfBase64 = pdf.output("datauristring");
+      pdfBase64 = pdfBase64.replace(/;filename=[^;]+;/, ";");
+
+      const uniqueFileName = `Slip_${karyawan?.nama?.replace(/\s+/g, "_")}_${Date.now()}`;
+
+      setUploadStatus("Mengunggah tautan...");
+      const uploadRes = await uploadSlipKeCloudinary(pdfBase64, uniqueFileName);
+
+      if (!uploadRes.success) {
+        toast.error("Gagal Upload: " + uploadRes.message);
+        return;
+      }
+
+      // Berhasil Upload! Simpan link ke state dan buka Modal
+      setGeneratedLink(uploadRes.url);
+      setIsLinkModalOpen(true);
+      toast.success("PDF berhasil dibuat!");
+    } catch (error: any) {
+      toast.error("Gagal! Cek koneksi atau coba lagi.");
+      console.error("DETAIL ERROR:", error.message || error);
+    }
+  };
+
+  // Fungsi untuk Copy dari dalam Modal
+  const handleCopyDariModal = () => {
+    navigator.clipboard.writeText(generatedLink);
+    toast.success("Tautan disalin ke clipboard!");
+  };
+
+  // Fungsi untuk buka WA dari dalam Modal
+  const handleKirimWAModal = () => {
+    if (!dataSlip) return;
     let msg = `*SLIP GAJI JAHIT - ALA COLLECTION*\n`;
     msg += `----------------------------------\n`;
     msg += `*Nama:* ${karyawan?.nama}\n`;
-    msg += `*Periode:* ${renderTanggalCantik(data.tanggalMulai.split("T")[0])} - ${renderTanggalCantik(data.tanggalAkhir.split("T")[0])}\n\n`;
+    msg += `*Periode:* ${renderTanggalCantik(dataSlip.tanggalMulai.split("T")[0])} - ${renderTanggalCantik(dataSlip.tanggalAkhir.split("T")[0])}\n`;
+    msg += `*TOTAL DITERIMA: ${formatRupiah(dataSlip.grandTotal)}*\n`;
+    msg += `----------------------------------\n\n`;
+    msg += `*Silakan lihat & unduh rincian slip gaji Anda pada tautan berikut:*\n`;
+    msg += `👉 ${generatedLink}\n`;
 
-    msg += `*Rincian Harian:*\n`;
-    data.riwayatHarian.forEach((day: any) => {
-      if (day.items && day.items.length > 0) {
-        msg += `✅ ${renderTanggalCantik(day.tanggal)}: ${formatRupiah(day.subtotalHarian)}\n`;
-      } else {
-        msg += `☕ ${renderTanggalCantik(day.tanggal)}: Libur\n`;
-      }
-    });
-
-    msg += `----------------------------------\n`;
-    msg += `*TOTAL DITERIMA: ${formatRupiah(data.grandTotal)}*\n`;
-
-    // Encode text agar aman masuk ke URL
-    const encodedMsg = encodeURIComponent(msg);
-    window.open(`https://wa.me/?text=${encodedMsg}`, "_blank");
+    window.open(`https://wa.me/?text=${encodeURIComponent(msg)}`, "_blank");
   };
 
   useEffect(() => {
@@ -178,25 +232,28 @@ export default function DetailKinerjaPage({
 
   const aksiCetakAtauBagikan = async () => {
     setIsPreparingSlip(true);
+    setUploadStatus("Menyiapkan Data...");
+
     const res = await getSlipGajiMingguIni(Number(karyawanId));
 
     if (res.success && res.data) {
       setDataSlip(res.data);
 
-      if (isMobile) {
-        // Jika di HP, langsung buat text WA dan buka link (tanpa nunggu render PDF DOM)
-        handleShareWA(res.data);
-        setIsPreparingSlip(false);
-      } else {
-        // Jika di PC, tunggu DOM ter-render untuk Print
-        setTimeout(() => {
+      setTimeout(async () => {
+        if (isMobile) {
+          await handleGenerateAndCopyLink();
+          setIsPreparingSlip(false);
+          setUploadStatus("");
+        } else {
           handlePrint();
           setIsPreparingSlip(false);
-        }, 500);
-      }
+          setUploadStatus("");
+        }
+      }, 1000);
     } else {
       toast.error("Gagal menyiapkan data.");
       setIsPreparingSlip(false);
+      setUploadStatus("");
     }
   };
 
@@ -231,13 +288,16 @@ export default function DetailKinerjaPage({
           {isPreparingSlip ? (
             <Loader2 className="animate-spin mr-2 h-4 w-4" />
           ) : isMobile ? (
-            <Send className="mr-2 h-4 w-4" />
+            <LinkIcon className="mr-2 h-4 w-4" />
           ) : (
             <Printer className="mr-2 h-4 w-4" />
           )}
-          {isMobile
-            ? "Kirim Slip ke WA (Link)"
-            : "Cetak Slip Gaji (Minggu Ini)"}
+
+          {isPreparingSlip && uploadStatus
+            ? uploadStatus
+            : isMobile
+              ? "Buat Link PDF"
+              : "Cetak Slip Gaji (Minggu Ini)"}
         </Button>
       </div>
 
@@ -332,6 +392,7 @@ export default function DetailKinerjaPage({
         )}
       </div>
 
+      {/* MODAL HASIL RINCIAN */}
       <Dialog open={isModalOpen} onOpenChange={setIsModalOpen}>
         <DialogContent className="sm:max-w-md">
           <DialogHeader className="border-b pb-4">
@@ -369,13 +430,52 @@ export default function DetailKinerjaPage({
         </DialogContent>
       </Dialog>
 
-      {/* RENDER OFF-SCREEN TERISOLASI UNTUK PDF (Khusus PC) */}
+      {/* MODAL LINK BERHASIL (SOLUSI CLIPBOARD ERROR) */}
+      <Dialog open={isLinkModalOpen} onOpenChange={setIsLinkModalOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader className="border-b pb-4">
+            <DialogTitle className="flex items-center gap-2 text-green-600">
+              <Check className="h-5 w-5" /> Tautan Berhasil Dibuat
+            </DialogTitle>
+            <p className="text-sm text-muted-foreground mt-1">
+              Slip gaji sudah siap. Silakan salin tautan di bawah ini atau kirim
+              langsung ke WhatsApp penjahit.
+            </p>
+          </DialogHeader>
+
+          <div className="mt-2 space-y-4">
+            <div className="flex items-center space-x-2">
+              <Input
+                value={generatedLink}
+                readOnly
+                className="bg-muted text-xs h-10"
+              />
+              <Button
+                onClick={handleCopyDariModal}
+                variant="secondary"
+                className="h-10"
+              >
+                Salin
+              </Button>
+            </div>
+
+            <Button
+              onClick={handleKirimWAModal}
+              className="w-full bg-[#25D366] hover:bg-[#20bd5a] text-white shadow-lg h-12 text-md"
+            >
+              <MessageCircle className="mr-2 h-5 w-5" />
+              Kirim via WhatsApp
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+
       <div style={{ position: "absolute", left: "-9999px", top: "-9999px" }}>
         <div
           ref={printRef}
           style={{ width: "1122px", backgroundColor: "#ffffff" }}
         >
-          {dataSlip && !isMobile && (
+          {dataSlip && (
             <SlipGaji karyawanNama={karyawan?.nama} dataSlip={dataSlip} />
           )}
         </div>

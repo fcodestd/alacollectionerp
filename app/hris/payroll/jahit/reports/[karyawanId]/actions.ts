@@ -8,6 +8,39 @@ import {
   produk,
 } from "@/lib/schema";
 import { eq, and, gte, lte } from "drizzle-orm";
+import { v2 as cloudinary } from "cloudinary";
+
+export async function uploadSlipKeCloudinary(
+  base64File: string,
+  namaFile: string,
+) {
+  try {
+    console.log("Mulai mengunggah ke Cloudinary...", namaFile);
+
+    const uploadResponse = await cloudinary.uploader.upload(base64File, {
+      // PERBAIKAN: Kembalikan ke "image" agar PDF diizinkan tampil di browser (tidak diblokir)
+      resource_type: "image",
+      folder: "slip_gaji",
+      public_id: namaFile, // Hapus akhiran .pdf di sini
+      format: "pdf", // Beritahu Cloudinary untuk merendernya sebagai PDF
+
+      cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+      api_key: process.env.CLOUDINARY_API_KEY,
+      api_secret: process.env.CLOUDINARY_API_SECRET,
+    });
+
+    console.log("Berhasil! URL:", uploadResponse.secure_url);
+    return { success: true, url: uploadResponse.secure_url };
+  } catch (error: any) {
+    console.error("Gagal upload Cloudinary DETAIL:", error);
+    return {
+      success: false,
+      message:
+        error?.message ||
+        "Terjadi kesalahan yang tidak diketahui dari Cloudinary.",
+    };
+  }
+}
 
 // Helper mendapatkan Date objek murni Asia/Jakarta (WIB)
 const getNowWib = () =>
@@ -18,7 +51,6 @@ const createWibBoundaries = (dateObj: Date, isEnd = false) => {
   const m = String(dateObj.getMonth() + 1).padStart(2, "0");
   const d = String(dateObj.getDate()).padStart(2, "0");
   const time = isEnd ? "23:59:59" : "00:00:00";
-  // Format ISO dengan offset +07:00 (WIB)
   return new Date(`${y}-${m}-${d}T${time}+07:00`);
 };
 
@@ -31,7 +63,6 @@ export async function getInfoKaryawan(id: number) {
   return data[0];
 }
 
-// Ambil Kinerja Harian (Digunakan untuk List di Page)
 export async function getKinerjaHarian(
   karyawanId: number,
   filterType: string,
@@ -43,17 +74,13 @@ export async function getKinerjaHarian(
     let endDate: Date;
 
     if (filterType === "7_hari") {
-      // Hitung 6 hari sebelum hari ini (Total 7 hari termasuk hari ini)
       const startWib = new Date(nowWib);
       startWib.setDate(nowWib.getDate() - 6);
-
       startDate = createWibBoundaries(startWib);
       endDate = createWibBoundaries(nowWib, true);
     } else {
-      // Filter Pilih Bulan (YYYY-MM)
       const [y, m] = customMonth.split("-").map(Number);
       startDate = createWibBoundaries(new Date(y, m - 1, 1));
-
       const lastDay = new Date(y, m, 0).getDate();
       endDate = createWibBoundaries(new Date(y, m - 1, lastDay), true);
     }
@@ -71,7 +98,6 @@ export async function getKinerjaHarian(
 
     const grouped: Record<string, any> = {};
     rawData.forEach((row) => {
-      // Pastikan konversi ke key tanggal menggunakan WIB
       const d = new Date(
         row.dibuatPada.toLocaleString("en-US", { timeZone: "Asia/Jakarta" }),
       );
@@ -134,7 +160,6 @@ export async function getDetailItemHarian(headerIds: number[]) {
   }
 }
 
-// KHUSUS UNTUK SLIP: Senin - Minggu WIB
 export async function getSlipGajiMingguIni(karyawanId: number) {
   try {
     const nowWib = getNowWib();
