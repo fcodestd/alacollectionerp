@@ -10,6 +10,7 @@ import {
   Printer,
   Receipt,
   Coffee,
+  Share2,
 } from "lucide-react";
 import { toast } from "sonner";
 import { useReactToPrint } from "react-to-print";
@@ -50,9 +51,9 @@ export default function DetailKinerjaPage({
   const [karyawan, setKaryawan] = useState<any>(null);
   const [kinerja, setKinerja] = useState<any[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [isMobile, setIsMobile] = useState(false);
 
-  // Filter UI
-  const [filterType, setFilterType] = useState("7_hari"); // Default Page: 7 Hari Terakhir
+  const [filterType, setFilterType] = useState("7_hari");
   const [customMonth, setCustomMonth] = useState(() => {
     const d = new Date(
       new Date().toLocaleString("en-US", { timeZone: "Asia/Jakarta" }),
@@ -60,7 +61,6 @@ export default function DetailKinerjaPage({
     return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
   });
 
-  // Generate daftar tanggal lengkap (WIB)
   const dateList = useMemo(() => {
     const dates = [];
     const nowWib = new Date(
@@ -68,7 +68,6 @@ export default function DetailKinerjaPage({
     );
 
     if (filterType === "7_hari") {
-      // Loop 7 hari: i=0 adalah hari ini, i=6 adalah 6 hari yang lalu
       for (let i = 0; i < 7; i++) {
         const d = new Date(nowWib);
         d.setDate(nowWib.getDate() - i);
@@ -86,24 +85,81 @@ export default function DetailKinerjaPage({
         );
       }
     }
-    return dates; // List sudah descending (terbaru di atas)
+    return dates;
   }, [filterType, customMonth]);
 
-  // Modal State
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [selectedTanggal, setSelectedTanggal] = useState("");
   const [detailHasil, setDetailHasil] = useState<any[]>([]);
   const [isLoadingHasil, setIsLoadingHasil] = useState(false);
 
-  // Print Logic
   const printRef = useRef<HTMLDivElement>(null);
   const [dataSlip, setDataSlip] = useState<any>(null);
   const [isPreparingSlip, setIsPreparingSlip] = useState(false);
+
+  useEffect(() => {
+    const checkMobile = () => setIsMobile(window.innerWidth < 768);
+    checkMobile();
+    window.addEventListener("resize", checkMobile);
+    return () => window.removeEventListener("resize", checkMobile);
+  }, []);
 
   const handlePrint = useReactToPrint({
     contentRef: printRef,
     documentTitle: `Slip_Gaji_${karyawan?.nama}`,
   });
+
+  // FUNGSI BARU: Langsung Bagikan File via Share API Bawaan HP
+  const handleSharePDF = async () => {
+    const element = printRef.current;
+    if (!element) return;
+
+    try {
+      toast.info("Menyiapkan PDF untuk dibagikan...");
+
+      const { toPng } = await import("html-to-image");
+      const { jsPDF } = await import("jspdf");
+
+      const dataUrl = await toPng(element, {
+        quality: 1,
+        pixelRatio: 2,
+        backgroundColor: "#ffffff",
+      });
+      const pdf = new jsPDF({
+        orientation: "landscape",
+        unit: "mm",
+        format: "a4",
+      });
+
+      const pdfWidth = 297 - 20;
+      const imgProps = pdf.getImageProperties(dataUrl);
+      const pdfHeight = (imgProps.height * pdfWidth) / imgProps.width;
+
+      pdf.addImage(dataUrl, "PNG", 10, 10, pdfWidth, pdfHeight);
+
+      // Mengubah PDF menjadi tipe data Blob & File yang bisa dikirim
+      const pdfBlob = pdf.output("blob");
+      const fileName = `Slip_Gaji_${karyawan?.nama?.replace(/\s+/g, "_")}_Minggu_Ini.pdf`;
+      const file = new File([pdfBlob], fileName, { type: "application/pdf" });
+
+      // Cek apakah HP mendukung fitur share file dokumen
+      if (navigator.canShare && navigator.canShare({ files: [file] })) {
+        await navigator.share({
+          files: [file],
+          title: "Slip Gaji Ala Collection",
+          text: `Berikut adalah rincian slip gaji untuk ${karyawan?.nama} minggu ini.`,
+        });
+        toast.success("Berhasil membagikan PDF!");
+      } else {
+        // Jika pakai PC atau browser jadul, fallback ke mode unduh
+        pdf.save(fileName);
+        toast.success("PDF diunduh (Browser tidak mendukung Share langsung).");
+      }
+    } catch (error) {
+      toast.error("Terjadi kesalahan atau share dibatalkan.");
+      console.error(error);
+    }
+  };
 
   useEffect(() => {
     const fetchData = async () => {
@@ -131,17 +187,22 @@ export default function DetailKinerjaPage({
     setIsLoadingHasil(false);
   };
 
-  const cetakSlip = async () => {
+  const aksiCetakAtauBagikan = async () => {
     setIsPreparingSlip(true);
     const res = await getSlipGajiMingguIni(Number(karyawanId));
     if (res.success && res.data) {
       setDataSlip(res.data);
+
       setTimeout(() => {
-        handlePrint();
+        if (isMobile) {
+          handleSharePDF(); // Panggil fungsi Share yang baru
+        } else {
+          handlePrint(); // Panggil print biasa jika di PC
+        }
         setIsPreparingSlip(false);
-      }, 500);
+      }, 1000);
     } else {
-      toast.error("Gagal menyiapkan data cetak.");
+      toast.error("Gagal menyiapkan data.");
       setIsPreparingSlip(false);
     }
   };
@@ -154,7 +215,6 @@ export default function DetailKinerjaPage({
     }).format(n);
 
   const renderTanggalCantik = (dateStr: string) => {
-    // Pakai T00:00:00 agar tidak bergeser tanggalnya saat parsing string YYYY-MM-DD
     const d = new Date(`${dateStr}T00:00:00`);
     return d.toLocaleDateString("id-ID", {
       weekday: "long",
@@ -167,7 +227,7 @@ export default function DetailKinerjaPage({
   if (!karyawan) return null;
 
   return (
-    <main className="p-4 md:p-8 max-w-5xl mx-auto space-y-6">
+    <main className="p-4 md:p-8 max-w-5xl mx-auto space-y-6 overflow-x-hidden">
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
         <div className="flex items-center gap-4">
           <Button
@@ -187,17 +247,20 @@ export default function DetailKinerjaPage({
           </div>
         </div>
 
+        {/* Tombol akan berubah Ikon dan Teks otomatis sesuai perangkat */}
         <Button
-          onClick={cetakSlip}
+          onClick={aksiCetakAtauBagikan}
           disabled={isPreparingSlip}
           className="bg-primary shadow-lg hover:shadow-xl transition-all"
         >
           {isPreparingSlip ? (
             <Loader2 className="animate-spin mr-2 h-4 w-4" />
+          ) : isMobile ? (
+            <Share2 className="mr-2 h-4 w-4" />
           ) : (
             <Printer className="mr-2 h-4 w-4" />
           )}
-          Cetak Slip Gaji (Minggu Ini)
+          {isMobile ? "Bagikan ke WhatsApp" : "Cetak Slip Gaji (Minggu Ini)"}
         </Button>
       </div>
 
@@ -208,9 +271,7 @@ export default function DetailKinerjaPage({
             <SelectValue placeholder="Pilih Periode" />
           </SelectTrigger>
           <SelectContent>
-            <SelectItem value="7_hari">
-              7 Hari Terakhir 
-            </SelectItem>
+            <SelectItem value="7_hari">7 Hari Terakhir</SelectItem>
             <SelectItem value="pilih_bulan">Pilih Bulan...</SelectItem>
           </SelectContent>
         </Select>
@@ -248,7 +309,7 @@ export default function DetailKinerjaPage({
                     : "hover:border-primary/50 transition-all shadow-sm"
                 }
               >
-                <div className="p-4 sm:p-6 flex justify-between items-center">
+                <div className="p-4 sm:p-6 flex flex-col sm:flex-row justify-between gap-4">
                   <div>
                     <p className="font-bold text-lg flex items-center gap-2">
                       {renderTanggalCantik(dateStr)}
@@ -268,8 +329,8 @@ export default function DetailKinerjaPage({
                       </p>
                     )}
                   </div>
-                  <div className="flex items-center gap-6">
-                    <div className="text-right">
+                  <div className="flex items-center justify-between sm:justify-end gap-6">
+                    <div className="text-left sm:text-right">
                       <p className="text-[10px] font-bold uppercase text-muted-foreground tracking-tighter mb-0.5">
                         Total Upah
                       </p>
@@ -331,15 +392,16 @@ export default function DetailKinerjaPage({
         </DialogContent>
       </Dialog>
 
-      {/* RENDER INVISIBLE UNTUK PRINT */}
-      <div className="hidden">
-        {dataSlip && (
-          <SlipGaji
-            ref={printRef}
-            karyawanNama={karyawan?.nama}
-            dataSlip={dataSlip}
-          />
-        )}
+      {/* RENDER OFF-SCREEN TERISOLASI UNTUK PDF */}
+      <div style={{ position: "absolute", left: "-9999px", top: "-9999px" }}>
+        <div
+          ref={printRef}
+          style={{ width: "1122px", backgroundColor: "#ffffff" }}
+        >
+          {dataSlip && (
+            <SlipGaji karyawanNama={karyawan?.nama} dataSlip={dataSlip} />
+          )}
+        </div>
       </div>
     </main>
   );

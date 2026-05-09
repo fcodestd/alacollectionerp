@@ -85,7 +85,7 @@ export default function LoginPage() {
             <Scissors className="h-6 w-6 text-primary-foreground" />
           </div> */}
           <span className="text-2xl font-bold tracking-wider">
-            ```` ALA COLLECTION
+            ALA COLLECTION
           </span>
         </div>
 
