@@ -12,7 +12,6 @@ import {
   Coffee,
   Link as LinkIcon,
   Check,
-  MessageCircle,
 } from "lucide-react";
 import { toast } from "sonner";
 import { useReactToPrint } from "react-to-print";
@@ -56,6 +55,7 @@ export default function DetailKinerjaPage({
   const [isLoading, setIsLoading] = useState(true);
   const [isMobile, setIsMobile] = useState(false);
 
+  // Filter UI
   const [filterType, setFilterType] = useState("7_hari");
   const [customMonth, setCustomMonth] = useState(() => {
     const d = new Date(
@@ -64,6 +64,7 @@ export default function DetailKinerjaPage({
     return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
   });
 
+  // Generate daftar 7 hari terakhir termasuk hari ini (WIB)
   const dateList = useMemo(() => {
     const dates = [];
     const nowWib = new Date(
@@ -98,13 +99,8 @@ export default function DetailKinerjaPage({
 
   const printRef = useRef<HTMLDivElement>(null);
   const [dataSlip, setDataSlip] = useState<any>(null);
-
   const [isPreparingSlip, setIsPreparingSlip] = useState(false);
   const [uploadStatus, setUploadStatus] = useState("");
-
-  // STATE BARU UNTUK MODAL LINK
-  const [generatedLink, setGeneratedLink] = useState("");
-  const [isLinkModalOpen, setIsLinkModalOpen] = useState(false);
 
   useEffect(() => {
     const checkMobile = () => setIsMobile(window.innerWidth < 768);
@@ -134,18 +130,19 @@ export default function DetailKinerjaPage({
     });
   };
 
-  const handleGenerateAndCopyLink = async () => {
+  // FUNGSI UTAMA: GENERATE PDF -> UPLOAD -> COPY LINK
+  const handleGenerateAndCopyDirectly = async () => {
     const element = printRef.current;
     if (!element) return;
 
     try {
-      setUploadStatus("Membuat dokumen...");
+      setUploadStatus("Membuat PDF...");
       const { toJpeg } = await import("html-to-image");
       const { jsPDF } = await import("jspdf");
 
       const dataUrl = await toJpeg(element, {
         quality: 0.8,
-        pixelRatio: 1.5,
+        pixelRatio: 1.2,
         backgroundColor: "#ffffff",
         skipFonts: true,
       });
@@ -161,47 +158,45 @@ export default function DetailKinerjaPage({
       pdf.addImage(dataUrl, "JPEG", 10, 10, pdfWidth, pdfHeight);
 
       let pdfBase64 = pdf.output("datauristring");
-      pdfBase64 = pdfBase64.replace(/;filename=[^;]+;/, ";");
+      const base64DataOnly = pdfBase64.split("base64,")[1];
+      const cleanBase64 = `data:application/pdf;base64,${base64DataOnly}`;
 
       const uniqueFileName = `Slip_${karyawan?.nama?.replace(/\s+/g, "_")}_${Date.now()}`;
 
-      setUploadStatus("Mengunggah tautan...");
-      const uploadRes = await uploadSlipKeCloudinary(pdfBase64, uniqueFileName);
+      setUploadStatus("Mengunggah...");
+      const uploadRes = await uploadSlipKeCloudinary(
+        cleanBase64,
+        uniqueFileName,
+      );
 
       if (!uploadRes.success) {
         toast.error("Gagal Upload: " + uploadRes.message);
         return;
       }
 
-      // Berhasil Upload! Simpan link ke state dan buka Modal
-      setGeneratedLink(uploadRes.url);
-      setIsLinkModalOpen(true);
-      toast.success("PDF berhasil dibuat!");
+      const finalLink = uploadRes.url;
+
+      // ATASI CLIPBOARD BLOCK: Coba salin otomatis, jika gagal tampilkan toast interaktif
+      try {
+        await navigator.clipboard.writeText(finalLink);
+        toast.success("Link PDF berhasil disalin ke clipboard!");
+      } catch (err) {
+        // Fallback jika browser memblokir clipboard otomatis (lack of user activation)
+        toast("PDF Siap!", {
+          description: "Klik tombol untuk menyalin tautan.",
+          action: {
+            label: "Salin Link",
+            onClick: () => {
+              navigator.clipboard.writeText(finalLink);
+              toast.success("Tautan disalin!");
+            },
+          },
+        });
+      }
     } catch (error: any) {
-      toast.error("Gagal! Cek koneksi atau coba lagi.");
-      console.error("DETAIL ERROR:", error.message || error);
+      toast.error("Terjadi kesalahan sistem.");
+      console.error(error);
     }
-  };
-
-  // Fungsi untuk Copy dari dalam Modal
-  const handleCopyDariModal = () => {
-    navigator.clipboard.writeText(generatedLink);
-    toast.success("Tautan disalin ke clipboard!");
-  };
-
-  // Fungsi untuk buka WA dari dalam Modal
-  const handleKirimWAModal = () => {
-    if (!dataSlip) return;
-    let msg = `*SLIP GAJI JAHIT - ALA COLLECTION*\n`;
-    msg += `----------------------------------\n`;
-    msg += `*Nama:* ${karyawan?.nama}\n`;
-    msg += `*Periode:* ${renderTanggalCantik(dataSlip.tanggalMulai.split("T")[0])} - ${renderTanggalCantik(dataSlip.tanggalAkhir.split("T")[0])}\n`;
-    msg += `*TOTAL DITERIMA: ${formatRupiah(dataSlip.grandTotal)}*\n`;
-    msg += `----------------------------------\n\n`;
-    msg += `*Silakan lihat & unduh rincian slip gaji Anda pada tautan berikut:*\n`;
-    msg += `👉 ${generatedLink}\n`;
-
-    window.open(`https://wa.me/?text=${encodeURIComponent(msg)}`, "_blank");
   };
 
   useEffect(() => {
@@ -209,7 +204,6 @@ export default function DetailKinerjaPage({
       setIsLoading(true);
       const info = await getInfoKaryawan(Number(karyawanId));
       setKaryawan(info);
-
       const res = await getKinerjaHarian(
         Number(karyawanId),
         filterType,
@@ -230,28 +224,24 @@ export default function DetailKinerjaPage({
     setIsLoadingHasil(false);
   };
 
-  const aksiCetakAtauBagikan = async () => {
+  const aksiMulai = async () => {
     setIsPreparingSlip(true);
-    setUploadStatus("Menyiapkan Data...");
-
+    setUploadStatus("Menyiapkan...");
     const res = await getSlipGajiMingguIni(Number(karyawanId));
 
     if (res.success && res.data) {
       setDataSlip(res.data);
-
       setTimeout(async () => {
         if (isMobile) {
-          await handleGenerateAndCopyLink();
-          setIsPreparingSlip(false);
-          setUploadStatus("");
+          await handleGenerateAndCopyDirectly();
         } else {
           handlePrint();
-          setIsPreparingSlip(false);
-          setUploadStatus("");
         }
+        setIsPreparingSlip(false);
+        setUploadStatus("");
       }, 1000);
     } else {
-      toast.error("Gagal menyiapkan data.");
+      toast.error("Gagal memuat data.");
       setIsPreparingSlip(false);
       setUploadStatus("");
     }
@@ -281,9 +271,9 @@ export default function DetailKinerjaPage({
         </div>
 
         <Button
-          onClick={aksiCetakAtauBagikan}
+          onClick={aksiMulai}
           disabled={isPreparingSlip}
-          className="bg-primary shadow-lg hover:shadow-xl transition-all"
+          className="bg-primary shadow-lg hover:shadow-xl transition-all h-12"
         >
           {isPreparingSlip ? (
             <Loader2 className="animate-spin mr-2 h-4 w-4" />
@@ -292,17 +282,16 @@ export default function DetailKinerjaPage({
           ) : (
             <Printer className="mr-2 h-4 w-4" />
           )}
-
           {isPreparingSlip && uploadStatus
             ? uploadStatus
             : isMobile
-              ? "Buat Link PDF"
+              ? "Salin Link PDF"
               : "Cetak Slip Gaji (Minggu Ini)"}
         </Button>
       </div>
 
       <Card className="bg-muted/30 border-dashed p-4 flex flex-col sm:flex-row items-center gap-4">
-        <span className="text-sm font-bold">Filter Tampilan:</span>
+        <span className="text-sm font-bold">Filter:</span>
         <Select value={filterType} onValueChange={setFilterType}>
           <SelectTrigger className="w-full sm:w-[220px] bg-background">
             <SelectValue placeholder="Pilih Periode" />
@@ -358,7 +347,7 @@ export default function DetailKinerjaPage({
                     </p>
                     {!row ? (
                       <div className="flex items-center gap-2 text-xs italic mt-1 text-muted-foreground">
-                        <Coffee size={12} /> Libur / Tidak ada pengerjaan
+                        <Coffee size={12} /> Libur
                       </div>
                     ) : (
                       <p className="text-sm text-muted-foreground font-medium">
@@ -368,8 +357,8 @@ export default function DetailKinerjaPage({
                   </div>
                   <div className="flex items-center justify-between sm:justify-end gap-6">
                     <div className="text-left sm:text-right">
-                      <p className="text-[10px] font-bold uppercase text-muted-foreground tracking-tighter mb-0.5">
-                        Total Upah
+                      <p className="text-[10px] font-bold uppercase text-muted-foreground mb-0.5 tracking-tighter">
+                        Upah
                       </p>
                       <p className="font-black text-xl text-primary">
                         {formatRupiah(row?.totalUpah || 0)}
@@ -381,7 +370,7 @@ export default function DetailKinerjaPage({
                         onClick={() => bukaDetail(row)}
                         className="h-10"
                       >
-                        <Eye size={16} className="mr-2" /> Lihat Hasil
+                        <Eye size={16} className="mr-2" /> Hasil
                       </Button>
                     )}
                   </div>
@@ -392,7 +381,7 @@ export default function DetailKinerjaPage({
         )}
       </div>
 
-      {/* MODAL HASIL RINCIAN */}
+      {/* MODAL RINCIAN */}
       <Dialog open={isModalOpen} onOpenChange={setIsModalOpen}>
         <DialogContent className="sm:max-w-md">
           <DialogHeader className="border-b pb-4">
@@ -430,46 +419,7 @@ export default function DetailKinerjaPage({
         </DialogContent>
       </Dialog>
 
-      {/* MODAL LINK BERHASIL (SOLUSI CLIPBOARD ERROR) */}
-      <Dialog open={isLinkModalOpen} onOpenChange={setIsLinkModalOpen}>
-        <DialogContent className="sm:max-w-md">
-          <DialogHeader className="border-b pb-4">
-            <DialogTitle className="flex items-center gap-2 text-green-600">
-              <Check className="h-5 w-5" /> Tautan Berhasil Dibuat
-            </DialogTitle>
-            <p className="text-sm text-muted-foreground mt-1">
-              Slip gaji sudah siap. Silakan salin tautan di bawah ini atau kirim
-              langsung ke WhatsApp penjahit.
-            </p>
-          </DialogHeader>
-
-          <div className="mt-2 space-y-4">
-            <div className="flex items-center space-x-2">
-              <Input
-                value={generatedLink}
-                readOnly
-                className="bg-muted text-xs h-10"
-              />
-              <Button
-                onClick={handleCopyDariModal}
-                variant="secondary"
-                className="h-10"
-              >
-                Salin
-              </Button>
-            </div>
-
-            <Button
-              onClick={handleKirimWAModal}
-              className="w-full bg-[#25D366] hover:bg-[#20bd5a] text-white shadow-lg h-12 text-md"
-            >
-              <MessageCircle className="mr-2 h-5 w-5" />
-              Kirim via WhatsApp
-            </Button>
-          </div>
-        </DialogContent>
-      </Dialog>
-
+      {/* RENDER OFF-SCREEN UNTUK PDF */}
       <div style={{ position: "absolute", left: "-9999px", top: "-9999px" }}>
         <div
           ref={printRef}
